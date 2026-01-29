@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled
 
@@ -145,6 +147,17 @@ Question:
 def ask_question(video_id: str, question: str) -> str:
     chain = get_rag_chain(video_id)
     return chain.invoke(question)
+
+
+if __name__ == "__main__":
+    video_id = "yKeNBjo_lJU"
+    question = "What is this video about"
+
+    answer = ask_question(video_id, question)
+    print(answer)
+
+
+
 
 
 
