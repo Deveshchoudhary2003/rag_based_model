@@ -4,5 +4,7 @@ langchain-core
 langchain-community
 langchain-huggingface
 fastapi
-uvicorn 
-streamlit
+uvicorn
+sentence-transformers
+faiss-cpu
+python-dotenv
