@@ -1,6 +1,4 @@
 import os
-from dotenv import load_dotenv
-load_dotenv()
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled
 
@@ -19,26 +17,28 @@ from langchain_core.runnables import (
 )
 from langchain_core.output_parsers import StrOutputParser
 
-# -------------------------------
-# GLOBAL OBJECTS (CACHED)
-# -------------------------------
-
-EMBEDDINGS = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-LLM = ChatHuggingFace(
-    llm=HuggingFaceEndpoint(
-        repo_id="openai/gpt-oss-20b",
-        task="text-generation",
-        temperature=0.3
-    )
-)
+INDEX_DIR = "indexes"
+os.makedirs(INDEX_DIR, exist_ok=True)
 
 rag_chain_cache = {}
 
-INDEX_DIR = "indexes"
-os.makedirs(INDEX_DIR, exist_ok=True)
+# -------------------------------
+# LAZY LOADERS (VERY IMPORTANT)
+# -------------------------------
+
+def get_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-MiniLM-L3-v2"
+    )
+
+def get_llm():
+    return ChatHuggingFace(
+        llm=HuggingFaceEndpoint(
+        repo_id="openai/gpt-oss-20b",
+        task="text-generation",
+        temperature=0.3
+        )
+    )
 
 # -------------------------------
 # TRANSCRIPT FETCH
@@ -49,58 +49,38 @@ def fetch_transcript(video_id: str) -> str:
         transcript = YouTubeTranscriptApi().fetch(video_id, languages=["en"])
         transcript_list = transcript.to_raw_data()
         return " ".join(chunk["text"] for chunk in transcript_list)
-
     except TranscriptsDisabled:
-        raise ValueError("No captions available for this video")
-
-    except Exception as e:
-        raise ValueError(str(e))
+        raise ValueError("No captions available")
 
 # -------------------------------
-# BUILD & SAVE FAISS (ONCE)
+# FAISS INDEX
 # -------------------------------
 
 def build_and_save_index(video_id: str):
-    index_path = f"{INDEX_DIR}/{video_id}"
-    if os.path.exists(index_path):
-        return  # already built
+    path = f"{INDEX_DIR}/{video_id}"
+    if os.path.exists(path):
+        return
 
     transcript = fetch_transcript(video_id)
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunk_size=800,
+        chunk_overlap=150
     )
-    chunks = splitter.create_documents([transcript])
+    docs = splitter.create_documents([transcript])
 
-    vector_store = FAISS.from_documents(chunks, EMBEDDINGS)
-    vector_store.save_local(index_path)
-
-# -------------------------------
-# LOAD FAISS (FAST)
-# -------------------------------
+    vector_store = FAISS.from_documents(docs, get_embeddings())
+    vector_store.save_local(path)
 
 def load_vector_store(video_id: str):
     return FAISS.load_local(
         f"{INDEX_DIR}/{video_id}",
-        EMBEDDINGS,
+        get_embeddings(),
         allow_dangerous_deserialization=True
     )
 
 # -------------------------------
-# FORMAT DOCS (TOKEN CONTROL)
-# -------------------------------
-
-def format_docs(docs, max_chars=3000):
-    text = ""
-    for doc in docs:
-        if len(text) + len(doc.page_content) > max_chars:
-            break
-        text += doc.page_content + "\n\n"
-    return text
-
-# -------------------------------
-# BUILD RAG CHAIN (CACHED)
+# RAG CHAIN
 # -------------------------------
 
 def get_rag_chain(video_id: str):
@@ -109,17 +89,14 @@ def get_rag_chain(video_id: str):
 
     build_and_save_index(video_id)
 
-    vector_store = load_vector_store(video_id)
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 4}
+    retriever = load_vector_store(video_id).as_retriever(
+        search_kwargs={"k": 3}
     )
 
     prompt = PromptTemplate(
         template="""
-You are a helpful assistant.
-Answer ONLY from the provided transcript context.
-If the context is insufficient, say "I don't know".
+Answer only using the context.
+If unknown, say "I don't know".
 
 Context:
 {context}
@@ -130,34 +107,24 @@ Question:
         input_variables=["context", "question"]
     )
 
-    parallel_chain = RunnableParallel({
-        "context": retriever | RunnableLambda(format_docs),
-        "question": RunnablePassthrough()
-    })
+    chain = (
+        RunnableParallel({
+            "context": retriever | RunnableLambda(lambda d: d[0].page_content),
+            "question": RunnablePassthrough()
+        })
+        | prompt
+        | get_llm()
+        | StrOutputParser()
+    )
 
-    main_chain = parallel_chain | prompt | LLM | StrOutputParser()
-
-    rag_chain_cache[video_id] = main_chain
-    return main_chain
+    rag_chain_cache[video_id] = chain
+    return chain
 
 # -------------------------------
-# ASK QUESTION (FAST PATH)
+# PUBLIC FUNCTION (API CALLS THIS)
 # -------------------------------
 
 def ask_question(video_id: str, question: str) -> str:
-    chain = get_rag_chain(video_id)
-    return chain.invoke(question)
-
-
-if __name__ == "__main__":
-    video_id = "yKeNBjo_lJU"
-    question = "What is this video about"
-
-    answer = ask_question(video_id, question)
-    print(answer)
-
-
-
-
+    return get_rag_chain(video_id).invoke(question)
 
 

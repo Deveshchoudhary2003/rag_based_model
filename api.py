@@ -1,11 +1,8 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 from main import ask_question
 from input_format import QuestionRequest
 from answer_format import AnswerResponse
 from error_format import ErrorResponse
-# APP INIT
-# =====================================================
 
 app = FastAPI(
     title="YouTube RAG API",
@@ -13,14 +10,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
-# ROUTES
-# =====================================================
-
 @app.get("/")
 def video_check():
     return {"status": "API is running 🚀"}
-
 
 @app.post(
     "/ask",
